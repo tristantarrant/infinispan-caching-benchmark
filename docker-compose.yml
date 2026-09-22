@@ -1,0 +1,42 @@
+# Optional steady-state cluster for the caching benchmark.
+#
+# The primary driver is run.sh (plain `docker`), which is better suited to the
+# per-step cache swap and the scale/failure events. Use this compose file when
+# you just want a fixed N-node cluster running:
+#
+#   TAG=16.2 docker compose up -d
+#
+# Uses the image's default server config; the workload client creates the caches
+# at runtime via the Hot Rod admin API, so nothing is mounted.
+#
+# Host networking + the default multicast stack keeps single-host clustering
+# simple. For a user-defined bridge network or Kubernetes, set the cache-container
+# <transport stack="kubernetes"> and define jgroups.dnsPing.query.
+#
+# Cluster name, node name and bind port are passed as CLI args (-g/-n/-p), which
+# launch.sh forwards to the server; the container does not read them from env vars.
+name: ispn-caching
+
+x-env: &env
+  USER: admin
+  PASS: secret
+  JAVA_OPTS_MEMORY: "-Xms1g -Xmx1g"
+
+x-node: &node
+  image: quay.io/infinispan/server:${TAG:-16.2}
+  network_mode: host
+  environment: *env
+
+services:
+  node1:
+    <<: *node
+    container_name: ispn-node1
+    command: ["-g", "caching-bench", "-n", "node-1", "-p", "11222"]
+  node2:
+    <<: *node
+    container_name: ispn-node2
+    command: ["-g", "caching-bench", "-n", "node-2", "-p", "11223"]
+  node3:
+    <<: *node
+    container_name: ispn-node3
+    command: ["-g", "caching-bench", "-n", "node-3", "-p", "11224"]

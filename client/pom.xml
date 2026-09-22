@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Caching-workload Hot Rod driver.
+
+  Standalone module (no parent): builds a shaded, self-contained jar that can be
+  run with `java -jar target/caching-bench.jar ...` against a Dockerized cluster.
+
+  Pin infinispan.version to the same release line as the server image tag used in
+  run.sh (default 16.2). A released version (not -SNAPSHOT) is used so the build
+  resolves from Maven Central without any snapshot repository.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+   <modelVersion>4.0.0</modelVersion>
+
+   <groupId>org.infinispan.bench</groupId>
+   <artifactId>caching</artifactId>
+   <version>1.0</version>
+   <packaging>jar</packaging>
+   <name>Caching Workload Hot Rod Driver</name>
+
+   <properties>
+      <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+      <maven.compiler.release>21</maven.compiler.release>
+      <infinispan.version>16.2.3</infinispan.version>
+      <hdrhistogram.version>2.2.2</hdrhistogram.version>
+   </properties>
+
+   <dependencyManagement>
+      <dependencies>
+         <dependency>
+            <groupId>org.infinispan</groupId>
+            <artifactId>infinispan-bom</artifactId>
+            <version>${infinispan.version}</version>
+            <type>pom</type>
+            <scope>import</scope>
+         </dependency>
+      </dependencies>
+   </dependencyManagement>
+
+   <dependencies>
+      <dependency>
+         <groupId>org.infinispan</groupId>
+         <artifactId>infinispan-client-hotrod</artifactId>
+      </dependency>
+      <!-- Needed to build the cache configuration programmatically and create it
+           at runtime through the Hot Rod admin API (no server config file required). -->
+      <dependency>
+         <groupId>org.infinispan</groupId>
+         <artifactId>infinispan-core</artifactId>
+      </dependency>
+      <dependency>
+         <groupId>org.hdrhistogram</groupId>
+         <artifactId>HdrHistogram</artifactId>
+         <version>${hdrhistogram.version}</version>
+      </dependency>
+   </dependencies>
+
+   <build>
+      <finalName>caching-bench</finalName>
+      <plugins>
+         <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <version>3.13.0</version>
+         </plugin>
+         <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-shade-plugin</artifactId>
+            <version>3.5.3</version>
+            <executions>
+               <execution>
+                  <phase>package</phase>
+                  <goals>
+                     <goal>shade</goal>
+                  </goals>
+                  <configuration>
+                     <createDependencyReducedPom>false</createDependencyReducedPom>
+                     <transformers>
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                           <mainClass>org.infinispan.bench.caching.Workload</mainClass>
+                        </transformer>
+                     </transformers>
+                     <filters>
+                        <filter>
+                           <artifact>*:*</artifact>
+                           <excludes>
+                              <exclude>META-INF/*.SF</exclude>
+                              <exclude>META-INF/*.DSA</exclude>
+                              <exclude>META-INF/*.RSA</exclude>
+                           </excludes>
+                        </filter>
+                     </filters>
+                  </configuration>
+               </execution>
+            </executions>
+         </plugin>
+      </plugins>
+   </build>
+</project>
