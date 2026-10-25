@@ -16,7 +16,7 @@ CLIENT_JAR="$HERE/client/target/caching-bench.jar"
 
 # --- defaults --------------------------------------------------------------
 IMAGE="quay.io/infinispan/server"
-TAG="16.2"
+TAG="16.3"
 STEP=1
 CACHE_ARGS=""              # client cache-shape flags derived from STEP (owners/near-cache/...)
 NODES=3

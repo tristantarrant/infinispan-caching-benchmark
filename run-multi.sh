@@ -17,6 +17,12 @@
 #
 #   ./run-multi.sh --clients 8 --bloom --label multi8-bloom
 #
+# Reading AGG ops/s (see README "How to read the numbers"): with frac=1 each client's near
+# cache holds its whole slice, so reads are local and AGG ops/s ~= 2x cluster WRITE capacity.
+# Use --near-cache-frac N (>1) to shrink the near caches below the slices; uniform reads then
+# miss at rate ~1-1/N and actually exercise the server's read path:
+#   ./run-multi.sh --clients 8 --bloom --near-cache-frac 4 --label multi8-bloom-fc4
+#
 set -uo pipefail   # deliberately NOT -e: one failed worker must not abort the run
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +30,7 @@ CLIENT_JAR="$HERE/client/target/caching-bench.jar"
 
 # --- defaults --------------------------------------------------------------
 IMAGE="quay.io/infinispan/server"
-TAG="16.2"
+TAG="16.3"
 CLIENTS=8
 NODES=3
 KEYS=200000
@@ -35,6 +41,7 @@ THREADS=4             # per-client concurrency; keep total client CPU from domin
 DURATION=30
 WARMUP=10
 BLOOM=""              # set to "--bloom" to enable the near-cache bloom filter
+NEAR_CACHE_FRAC=1     # per-client near cache = slice/frac; frac>1 makes reads miss (go remote) at ~1-1/frac
 BASE_PORT=11222
 CLUSTER="caching-bench"
 HEAP="-Xms1g -Xmx1g"
@@ -56,6 +63,7 @@ while [[ $# -gt 0 ]]; do
       --duration)   DURATION="$2"; shift 2 ;;
       --warmup)     WARMUP="$2"; shift 2 ;;
       --bloom)      BLOOM="--bloom"; shift ;;
+      --near-cache-frac) NEAR_CACHE_FRAC="$2"; shift 2 ;;
       --tag)        TAG="$2"; shift 2 ;;
       --base-port)  BASE_PORT="$2"; shift 2 ;;
       --label)      LABEL="$2"; shift 2 ;;
@@ -64,9 +72,14 @@ while [[ $# -gt 0 ]]; do
    esac
 done
 
+[[ "$NEAR_CACHE_FRAC" =~ ^[1-9][0-9]*$ ]] \
+   || { echo "near-cache-frac must be a positive integer, got: $NEAR_CACHE_FRAC" >&2; exit 2; }
 SLICE=$(( KEYS / CLIENTS ))
+# Near cache per client = slice/frac. frac=1 (default) => each near cache holds its whole
+# slice and reads are local; AGG ops/s then ~= 2x cluster write capacity, NOT read scaling.
+NC_SIZE=$(( SLICE / NEAR_CACHE_FRAC )); [[ $NC_SIZE -lt 64 ]] && NC_SIZE=64
 RUN_NAME="${LABEL:-multi${CLIENTS}-$(date +%H%M%S)}"
-echo ">>> multi-client: clients=$CLIENTS slice=$SLICE bloom=${BLOOM:-no} readRatio=$READ_RATIO nodes=$NODES run=$RUN_NAME"
+echo ">>> multi-client: clients=$CLIENTS slice=$SLICE nearCacheSize=$NC_SIZE (frac=$NEAR_CACHE_FRAC) bloom=${BLOOM:-no} readRatio=$READ_RATIO nodes=$NODES run=$RUN_NAME"
 
 [[ -f "$CLIENT_JAR" ]]      || { echo "client jar not built: run 'cd client && mvn -q -DskipTests package'" >&2; exit 1; }
 command -v docker >/dev/null  || { echo "docker is required" >&2; exit 1; }
@@ -128,12 +141,12 @@ java $CLIENT_HEAP -jar "$CLIENT_JAR" $COMMON --owners 1 --init-only $WORKLOAD \
 tail -n 2 "$RESULTS/${RUN_NAME}-init.log"
 
 # --- 2. launch N workers in parallel, each on its own slice ----------------
-echo ">>> launching $CLIENTS workers (near-cache size=$SLICE, bloom=${BLOOM:-no})"
+echo ">>> launching $CLIENTS workers (near-cache size=$NC_SIZE, bloom=${BLOOM:-no})"
 PIDS=()
 for ((i = 0; i < CLIENTS; i++)); do
    # shellcheck disable=SC2086
    java $CLIENT_HEAP -jar "$CLIENT_JAR" $COMMON \
-      --owners 1 --near-cache invalidated --near-cache-size "$SLICE" $BLOOM \
+      --owners 1 --near-cache invalidated --near-cache-size "$NC_SIZE" $BLOOM \
       --no-create-cache --no-prefill \
       --client-index "$i" --client-count "$CLIENTS" \
       --warmup "$WARMUP" --duration "$DURATION" \

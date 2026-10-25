@@ -28,6 +28,11 @@ public final class ClientConfig {
       int threads = Math.max(1, a.intVal("threads", 8));
       cb.connectionPool().maxActive(threads).exhaustedAction(ExhaustedAction.WAIT);
 
+      // Client-side statistics: exposes the near-cache hit/miss counters (via JMX) so results
+      // can report true read locality. A "hit" from a plain get() only proves the key exists;
+      // it cannot tell a local near-cache hit apart from a remote read that found the key.
+      cb.statistics().enable();
+
       if ("invalidated".equalsIgnoreCase(a.str("near-cache", "none"))) {
          int size = a.intVal("near-cache-size", DEFAULT_NEAR_CACHE_SIZE);
          if (size <= 0) size = DEFAULT_NEAR_CACHE_SIZE; // required when --bloom is set

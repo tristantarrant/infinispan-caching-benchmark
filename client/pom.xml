@@ -6,7 +6,7 @@
   run with `java -jar target/caching-bench.jar ...` against a Dockerized cluster.
 
   Pin infinispan.version to the same release line as the server image tag used in
-  run.sh (default 16.2). A released version (not -SNAPSHOT) is used so the build
+  run.sh (default 16.3). A released version (not -SNAPSHOT) is used so the build
   resolves from Maven Central without any snapshot repository.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -22,7 +22,7 @@
    <properties>
       <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
       <maven.compiler.release>21</maven.compiler.release>
-      <infinispan.version>16.2.3</infinispan.version>
+      <infinispan.version>16.3.1</infinispan.version>
       <hdrhistogram.version>2.2.2</hdrhistogram.version>
    </properties>
 

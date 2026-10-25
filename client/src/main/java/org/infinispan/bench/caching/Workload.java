@@ -2,6 +2,8 @@ package org.infinispan.bench.caching;
 
 import org.infinispan.client.hotrod.RemoteCache;
 import org.infinispan.client.hotrod.RemoteCacheManager;
+import org.infinispan.client.hotrod.impl.ClientStatistics;
+import org.infinispan.client.hotrod.impl.InternalRemoteCache;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -112,13 +114,15 @@ public final class Workload {
                         } else {
                            metrics.recordReadHit();
                         }
-                        metrics.recordLatency(tid, opNs);
+                        // Reads are recorded separately: a hit may be served from the local
+                        // near cache (no network), while every write goes to the server.
+                        metrics.recordReadLatency(tid, opNs);
                      } else {
                         long s0 = System.nanoTime();
                         cache.put(keyIdx, value);
                         long opNs = System.nanoTime() - s0;
                         metrics.recordWrite();
-                        metrics.recordLatency(tid, opNs);
+                        metrics.recordWriteLatency(tid, opNs);
                      }
                      metrics.recordOp((int) metrics.elapsedSecond());
                   }
@@ -143,8 +147,9 @@ public final class Workload {
          done.await();
          for (Thread w : workers) w.join();
 
+         long[] ncStats = nearCacheStats(cache);
          String json = toJson(a, metrics, warmup, duration, keys, valueSize, threads,
-            zipf, readRatio, dbLatencyMs, hosts, cacheName);
+            zipf, readRatio, dbLatencyMs, hosts, cacheName, ncStats);
          System.out.println(json);
 
          String resultDir = a.str("result-dir", "");
@@ -162,12 +167,19 @@ public final class Workload {
 
    private static String toJson(Args a, Metrics m, int warmup, int duration, int keys, int valueSize,
                                 int threads, boolean zipf, double readRatio, long dbLatencyMs,
-                                String hosts, String cacheName) {
+                                String hosts, String cacheName,
+                                 long[] ncStats) {
       long[] series = m.opsSeries(warmup, duration);
       long measuredOps = 0;
       for (long v : series) measuredOps += v;
       double opsPerSec = duration > 0 ? (double) measuredOps / duration : 0;
+      // Split latency views: reads vs writes. With an invalidated near cache sized to the
+      // working set, read p50 can be local (microseconds) while every write pays network RTT;
+      // a merged histogram hides that and makes "ops/s" look like cluster throughput when it
+      // is really gated by write processing; see "How to read the numbers" in the README for details.
       double[] lat = m.percentilesUs();
+      double[] rlat = m.percentilesUs(Metrics.READS);
+      double[] wlat = m.percentilesUs(Metrics.WRITES);
 
       StringBuilder sb = new StringBuilder();
       sb.append("{\n");
@@ -203,15 +215,32 @@ public final class Workload {
       sb.append("  \"readHits\": ").append(m.readHits()).append(",\n");
       sb.append("  \"readMisses\": ").append(m.readMisses()).append(",\n");
       sb.append("  \"readHitRate\": ").append(round4(m.readHitRate())).append(",\n");
+      // Value-level misses (the server returned null). In a prefilled benchmark this stays ~0 and
+      // says nothing about locality; the near-cache counters below measure that.
+      sb.append("  \"readValueMisses\": ").append(m.readMisses()).append(",\n");
+      if (ncStats != null) {
+         sb.append("  \"nearCacheHits\": ").append(ncStats[0]).append(",\n");
+         sb.append("  \"nearCacheMisses\": ").append(ncStats[1]).append(",\n");
+         // With an invalidated near cache, a miss means the read went remote.
+         sb.append("  \"remoteReads\": ").append(ncStats[1]).append(",\n");
+      }
       sb.append("  \"dbLoads\": ").append(m.dbLoads()).append(",\n");
-      sb.append("  \"latencyUs\": {\n");
-      sb.append("    \"p50\": ").append(round2(lat[0])).append(",\n");
-      sb.append("    \"p90\": ").append(round2(lat[1])).append(",\n");
-      sb.append("    \"p99\": ").append(round2(lat[2])).append(",\n");
-      sb.append("    \"p999\": ").append(round2(lat[3])).append(",\n");
-      sb.append("    \"max\": ").append(round2(lat[4])).append(",\n");
-      sb.append("    \"mean\": ").append(round2(m.meanUs())).append("\n");
-      sb.append("  },\n");
+      appendLatencyBlock(sb, "latencyUs", lat, m.meanUs());
+      appendLatencyBlock(sb, "readLatencyUs", rlat, m.meanUs(Metrics.READS));
+      appendLatencyBlock(sb, "writeLatencyUs", wlat, m.meanUs(Metrics.WRITES));
+
+      // Coordinated-omission correction. This is a closed-loop load tester: when the system stalls,
+      // in-flight ops drop to zero and raw percentiles understate tail latency (the classic
+      // 10 req/s + 5 s pause trap). The blocks below re-inject synthetic samples at the expected
+      // inter-sample interval - the median measured wall-clock gap between consecutive same-type
+      // ops on each thread. A value of 0 means fewer than two gaps were captured (no correction);
+      // in that case the corrected block equals the raw one. Raw blocks above are unchanged.
+      double[] crlat = m.correctedPercentilesUs(Metrics.READS);
+      double[] cwlat = m.correctedPercentilesUs(Metrics.WRITES);
+      sb.append("  \"readExpectedIntervalUs\": ").append(round2(m.expectedIntervalNs(Metrics.READS) / 1000.0)).append(",\n");
+      sb.append("  \"writeExpectedIntervalUs\": ").append(round2(m.expectedIntervalNs(Metrics.WRITES) / 1000.0)).append(",\n");
+      appendLatencyBlock(sb, "correctedReadLatencyUs", crlat, m.correctedMeanUs(Metrics.READS));
+      appendLatencyBlock(sb, "correctedWriteLatencyUs", cwlat, m.correctedMeanUs(Metrics.WRITES));
       sb.append("  \"opsPerSecond\": [");
       for (int i = 0; i < series.length; i++) {
          if (i > 0) sb.append(",");
@@ -220,6 +249,32 @@ public final class Workload {
       sb.append("]\n");
       sb.append("}\n");
       return sb.toString();
+   }
+
+   /** Reads the Hot Rod client's built-in near-cache counters ({@link ClientStatistics}); returns
+    * {hits, misses} or null when this cache/ version does not expose them. */
+   private static long[] nearCacheStats(RemoteCache cache) {
+      try {
+         if (cache instanceof InternalRemoteCache irc && irc.clientStatistics() != null) {
+            ClientStatistics cs = irc.clientStatistics();
+            return new long[]{cs.getNearCacheHits(), cs.getNearCacheMisses()};
+         }
+      } catch (Exception e) {
+         System.err.println(">>> could not read client near-cache stats: " + e);
+      }
+      return null;
+   }
+
+   /** Emits a {@code <name>: {p50, p90, p99, p999, max, mean}} JSON block in microseconds. */
+   private static void appendLatencyBlock(StringBuilder sb, String name, double[] lat, double mean) {
+      sb.append("  \"").append(name).append("\": {\n");
+      sb.append("    \"p50\": ").append(round2(lat[0])).append(",\n");
+      sb.append("    \"p90\": ").append(round2(lat[1])).append(",\n");
+      sb.append("    \"p99\": ").append(round2(lat[2])).append(",\n");
+      sb.append("    \"p999\": ").append(round2(lat[3])).append(",\n");
+      sb.append("    \"max\": ").append(round2(lat[4])).append(",\n");
+      sb.append("    \"mean\": ").append(round2(mean)).append("\n");
+      sb.append("  },\n");
    }
 
    /** A single-line description of the cache + near-cache shape for the JSON output. */
