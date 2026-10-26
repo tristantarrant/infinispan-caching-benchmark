@@ -167,6 +167,8 @@ runs that differ in how often they stall; use *raw* for steady-state latency of 
   A drop in value-level hit rate below ≈100% means keys are genuinely missing —
   investigate (wrong slice, evictions beyond the configured size, failed prefill).
 
+**Pinned matrix results (bloom vs no-bloom, two repeats each).** With `--pin-cpus 1` (one dedicated core per client JVM) at 8 and 16 clients on a 3-node cluster: repeat-to-repeat variance in AGG ops/s reached ~±13% even pinned, while the bloom/no-bloom difference stayed *inside* that band at both client counts — so **selective invalidation shows no measurable benefit below ≈16 clients here**: per-write RTT + server processing dominates over O(N−1) wasted push messages. The old unpinned "AGG falls as clients are added" trend was mostly scheduling contention (the pinned no-bloom 8-client pair agrees within ~2%, though host-level variance still reached ±13% in other cells). Coordinated-omission-corrected p99s expose multi-ms stalls in every run that raw percentiles understate (~3–6 ms sustained-pressure tail vs <1 ms raw combined).
+
 ## Knobs
 
 Workload shape (pass via `--workload "..."`):
