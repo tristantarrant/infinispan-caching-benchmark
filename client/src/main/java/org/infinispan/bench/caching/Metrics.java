@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLongArray;
  * writes <em>separately</em>, op counters, read hit-rate, and a per-second op time series
  * used to plot throughput dips around a scale/failure event.
  *
+ * Percentiles can also be read after coordinated-omission correction ({@link #correctedPercentilesUs}): closed-loop workers stop issuing ops while the system stalls, so raw percentiles understate tail latency; E is each thread median measured inter-sample gap (see README).
+ *
  * <p>The split matters because with an invalidated near cache sized to the working set,
  * "reads" are local map lookups while only misses (and all writes) touch the network; one
  * merged histogram hides which side of the wire is slow. With an invalidated near cache a
