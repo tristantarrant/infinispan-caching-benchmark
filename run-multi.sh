@@ -103,7 +103,7 @@ start_node() {
       -e USER="$USERNAME" -e PASS="$PASSWORD" \
       -e JAVA_OPTS_MEMORY="$HEAP" \
       "$IMAGE:$TAG" \
-      -g "$CLUSTER" -n "node-$i" -p "$port" >/dev/null
+      -g "$CLUSTER" -n "node-$i" -p "$port" >"$RESULTS/${RUN_NAME}-node$i.docker.log" 2>&1 || { echo ">>> node $i failed to start:" >&2; cat "$RESULTS/${RUN_NAME}-node$i.docker.log" >&2; return 1; }
 }
 
 wait_port() {
@@ -119,7 +119,7 @@ wait_port() {
 }
 
 # --- start the cluster -----------------------------------------------------
-for ((i = 1; i <= NODES; i++)); do start_node "$i"; done
+for ((i = 1; i <= NODES; i++)); do start_node "$i" || { echo ">>> node $i failed to start, aborting run (see ${RUN_NAME}-node$i.docker.log)" >&2; exit 1; }; done
 echo ">>> waiting for $NODES nodes..."
 for ((i = 1; i <= NODES; i++)); do
    wait_port 127.0.0.1 "$(( BASE_PORT + i - 1 ))" 120 \
