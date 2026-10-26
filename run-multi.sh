@@ -42,6 +42,7 @@ DURATION=30
 WARMUP=10
 BLOOM=""              # set to "--bloom" to enable the near-cache bloom filter
 NEAR_CACHE_FRAC=1     # per-client near cache = slice/frac; frac>1 makes reads miss (go remote) at ~1-1/frac
+PIN_CPUS=""             # --pin-cpus N: pin worker i to CPUs [i*N, (i+1)*N) via taskset
 BASE_PORT=11222
 CLUSTER="caching-bench"
 HEAP="-Xms1g -Xmx1g"
@@ -64,6 +65,7 @@ while [[ $# -gt 0 ]]; do
       --warmup)     WARMUP="$2"; shift 2 ;;
       --bloom)      BLOOM="--bloom"; shift ;;
       --near-cache-frac) NEAR_CACHE_FRAC="$2"; shift 2 ;;
+       --pin-cpus)     PIN_CPUS="$2"; shift 2 ;;
       --tag)        TAG="$2"; shift 2 ;;
       --base-port)  BASE_PORT="$2"; shift 2 ;;
       --label)      LABEL="$2"; shift 2 ;;
@@ -79,7 +81,7 @@ SLICE=$(( KEYS / CLIENTS ))
 # slice and reads are local; AGG ops/s then ~= 2x cluster write capacity, NOT read scaling.
 NC_SIZE=$(( SLICE / NEAR_CACHE_FRAC )); [[ $NC_SIZE -lt 64 ]] && NC_SIZE=64
 RUN_NAME="${LABEL:-multi${CLIENTS}-$(date +%H%M%S)}"
-echo ">>> multi-client: clients=$CLIENTS slice=$SLICE nearCacheSize=$NC_SIZE (frac=$NEAR_CACHE_FRAC) bloom=${BLOOM:-no} readRatio=$READ_RATIO nodes=$NODES run=$RUN_NAME"
+echo ">>> multi-client: clients=$CLIENTS slice=$SLICE nearCacheSize=$NC_SIZE (frac=$NEAR_CACHE_FRAC) bloom=${BLOOM:-no} readRatio=$READ_RATIO pin=${PIN_CPUS:-off} nodes=$NODES run=$RUN_NAME"
 
 [[ -f "$CLIENT_JAR" ]]      || { echo "client jar not built: run 'cd client && mvn -q -DskipTests package'" >&2; exit 1; }
 command -v docker >/dev/null  || { echo "docker is required" >&2; exit 1; }
@@ -144,8 +146,11 @@ tail -n 2 "$RESULTS/${RUN_NAME}-init.log"
 echo ">>> launching $CLIENTS workers (near-cache size=$NC_SIZE, bloom=${BLOOM:-no})"
 PIDS=()
 for ((i = 0; i < CLIENTS; i++)); do
+   # optional CPU pinning: dedicated core(s) per client JVM so fan-out cost is not
+   # confounded with scheduling contention across the client processes (see README)
+   PIN=( ); [[ -n "$PIN_CPUS" ]] && PIN=(taskset -c $((i*PIN_CPUS))-$(((i+1)*PIN_CPUS-1)))
    # shellcheck disable=SC2086
-   java $CLIENT_HEAP -jar "$CLIENT_JAR" $COMMON \
+   "${PIN[@]}" java $CLIENT_HEAP -jar "$CLIENT_JAR" $COMMON \
       --owners 1 --near-cache invalidated --near-cache-size "$NC_SIZE" $BLOOM \
       --no-create-cache --no-prefill \
       --client-index "$i" --client-count "$CLIENTS" \
